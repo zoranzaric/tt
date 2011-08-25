@@ -1,0 +1,154 @@
+#!/usr/bin/env python2
+# tt -- a simple time tracker
+# Version: 0.1.0
+
+import shlex
+import sys
+import sqlite3
+
+MIGRATIONS = [
+    "CREATE TABLE tt (timestamp integer, action string, project string);"
+]
+
+class TimeTracker():
+
+    def __init__(self):
+        self.conn = sqlite3.connect('/home/zz/.tt/tt.sqlite')
+        self._migrate()
+
+
+    def _migrate(self):
+        CREATE_MIGRATION_STATUS = "CREATE TABLE migration_status (version integer);"
+
+        current_version = -1
+        try:
+            cursor = self.conn.execute("SELECT version FROM migration_status;")
+            for version in cursor:
+                current_version = version
+        except sqlite3.OperationalError, e:
+            if e.message == "no such table: migration_status":
+                self.conn.execute(CREATE_MIGRATION_STATUS)
+
+        for index, migration in enumerate(MIGRATIONS):
+            if index == 0 and current_version == -1:
+                self.conn.execute("INSERT INTO migration_status VALUES (0);")
+                self.conn.commit()
+            if current_version < index:
+                self.conn.execute(MIGRATIONS[index])
+                self.conn.execute("UPDATE migration_status SET version = ?", (index,))
+                self.conn.commit()
+
+
+    def _get_all_projects(self):
+        cursor = self.conn.execute("SELECT DISTINCT project FROM tt ORDER BY project;")
+        projects = []
+        for (project,) in cursor:
+            projects.append(project)
+        return projects
+
+
+    def _get_started_projects(self):
+        cursor = self.conn.execute("SELECT project FROM (SELECT project, action FROM tt GROUP BY project ORDER BY timestamp) WHERE action = 'start';")
+        started_projects = []
+        for project in cursor:
+            started_projects.append(project[0])
+        return started_projects
+
+
+
+    def status(self, project):
+        started_projects = self._get_started_projects()
+        sys.stdout.write("%s\n" % ", ".join(started_projects))
+
+
+    def start(self, project):
+        START_SQL = "INSERT INTO tt VALUES (datetime('NOW'), 'start', ?);"
+        LAST_ACTION_SQL = "SELECT action FROM tt WHERE project = ? ORDER BY timestamp DESC LIMIT 1;"
+        if not project:
+            projects = self._get_all_projects()
+            index_project = dict()
+            for i, project in enumerate(projects):
+                sys.stderr.write("%d. %s\n" % (i+1, project))
+                index_project[str(i+1)] = project
+            input = None
+            while not input:
+                input = raw_input("Choose project 0 for new: ")
+                if input not in index_project and input != "0":
+                    sys.stderr.write("Invalid input\n")
+                    input = None
+            if input == "0":
+                project = raw_input("New project name: ")
+            else:
+                project = index_project[input]
+
+        cursor = self.conn.execute(LAST_ACTION_SQL, (project,))
+        try:
+            (action,) = cursor.next()
+            if action == 'start':
+                sys.stderr.write("Work already started for this project\n")
+                return
+        except StopIteration:
+            pass
+        self.conn.execute(START_SQL, (project,))
+        self.conn.commit()
+
+
+    def stop(self, project):
+        STOP_SQL = "INSERT INTO tt VALUES (datetime('NOW'), 'stop', ?);"
+        LAST_ACTION_SQL = "SELECT action FROM tt WHERE project = ? ORDER BY timestamp DESC LIMIT 1;"
+
+        if not project:
+            projects = self._get_started_projects()
+            if projects:
+                index_project = dict()
+                for i, project in enumerate(projects):
+                    sys.stderr.write("%d. %s\n" % (i+1, project))
+                    index_project[str(i+1)] = project
+                input = None
+                while not input:
+                    input = raw_input("Choose project: ")
+                    if input not in index_project:
+                        sys.stderr.write("Invalid input\n")
+                        input = None
+                project = index_project[input]
+            else:
+                sys.stderr.write("No work started\n")
+                return
+
+        cursor = self.conn.execute(LAST_ACTION_SQL, (project,))
+        try:
+            (action,) = cursor.next()
+            if action == 'stop':
+                sys.stderr.write("Work not started for this project\n")
+                return
+        except StopIteration:
+            pass
+        self.conn.execute(STOP_SQL, (project,))
+        self.conn.commit()
+
+
+    def main(self, args):
+        splitted_args = shlex.split(" ".join(args))[1:]
+        if len(splitted_args) > 0:
+            action = splitted_args[0]
+        else:
+            action = 'status'
+
+        if len(splitted_args) > 1:
+            project =  splitted_args[1]
+        else:
+            project = None
+
+        if action == 'status':
+            self.status(project)
+        elif action == 'start':
+            self.start(project)
+        elif action == 'stop':
+            self.stop(project)
+
+
+
+if __name__ == '__main__':
+    tt = TimeTracker()
+    tt.main(sys.argv)
+
